@@ -124,6 +124,16 @@ async function findSteamAppId(gameName, gameId) {
   return steamAppId;
 }
 
+function stripHtml(html) {
+  return html
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function getSteamDetails(appId) {
   if (!appId) return null;
   const data = await fetchJsonSafe(
@@ -139,6 +149,7 @@ async function getSteamDetails(appId) {
     cover_image: d.header_image,
     genres: (d.genres || []).map((g) => g.description),
     description: d.short_description,
+    about_the_game: d.about_the_game ? stripHtml(d.about_the_game) : null,
     price: d.is_free
       ? { is_free: true }
       : d.price_overview
@@ -154,8 +165,9 @@ async function getSteamDetails(appId) {
 
 // ---------- 説明文の短縮 ----------
 // お金をかけずに、意味の通る単位で自然に短くする。
-// Steamの説明文はよく「〇〇媒体でGOTY候補」のような受賞歴の羅列から始まることがあるため、
-// そういう文（「」が3つ以上並ぶ文）は避けて、実際のゲーム説明の文を優先する。
+// Steamの説明文は「〇〇媒体でGOTY候補」のような受賞歴の話だけで1文が完結していることがあるため、
+// short_descriptionとabout_the_game（詳細説明）の両方から候補文を集め、
+// 受賞歴っぽい文（引用符が多い／「受賞」「候補」などのキーワードを含む）は避けて選ぶ。
 function splitSentences(text) {
   return text
     .split(/(?<=[。！？])/)
@@ -163,15 +175,34 @@ function splitSentences(text) {
     .filter(Boolean);
 }
 
-function truncateToSentence(text, maxLen) {
-  const stripped = text.replace(/<[^>]*>/g, "");
-  const sentences = splitSentences(stripped);
-  if (sentences.length === 0) return stripped.slice(0, maxLen);
+const ACCOLADE_KEYWORDS = [
+  "受賞",
+  "候補",
+  "ノミネート",
+  "高い評価",
+  "ベストゲーム",
+  "オブザイヤー",
+  "選ばれ",
+  "満場一致",
+  "絶賛",
+  "レビュー",
+  "GOTY",
+];
 
-  const isAccolade = (s) => (s.match(/「/g) || []).length >= 3;
-  const candidates = sentences.some((s) => !isAccolade(s))
-    ? sentences.filter((s) => !isAccolade(s))
-    : sentences;
+function isAccolade(sentence) {
+  const quoteCount = (sentence.match(/「/g) || []).length;
+  const hasKeyword = ACCOLADE_KEYWORDS.some((k) => sentence.includes(k));
+  return quoteCount >= 2 || hasKeyword;
+}
+
+function pickSummary(shortDescription, aboutTheGame, maxLen) {
+  const pool = [];
+  if (shortDescription) pool.push(...splitSentences(shortDescription));
+  if (aboutTheGame) pool.push(...splitSentences(aboutTheGame));
+  if (pool.length === 0) return null;
+
+  const descriptive = pool.filter((s) => !isAccolade(s) && s.length >= 6);
+  const candidates = descriptive.length > 0 ? descriptive : pool;
 
   // 文字数内に収まる範囲で、文単位でつなげる
   let result = "";
@@ -189,17 +220,18 @@ function truncateToSentence(text, maxLen) {
   return slice + "…";
 }
 
-async function getOrCreateSummary(appId, description) {
-  if (!appId || !description) return description || null;
+async function getOrCreateSummary(appId, details) {
+  if (!appId || !details) return null;
   const ref = db.collection("description_summaries").doc(String(appId));
   const cached = await ref.get();
   if (cached.exists) return cached.data().summary;
 
   // カード内(2行・幅約300px)に収まる目安として52文字程度で区切る
-  const summary = truncateToSentence(description, 52);
+  const summary = pickSummary(details.description, details.about_the_game, 52);
   await ref.set({
     summary,
-    source_description: description,
+    source_description: details.description || null,
+    source_about_the_game: details.about_the_game || null,
     created_at: admin.firestore.FieldValue.serverTimestamp(),
   });
   return summary;
@@ -228,9 +260,7 @@ async function main() {
     ? await findSteamAppId(channel.game_name, channel.game_id)
     : null;
   const details = await getSteamDetails(steamAppId);
-  const descriptionSummary = details
-    ? await getOrCreateSummary(steamAppId, details.description)
-    : null;
+  const descriptionSummary = details ? await getOrCreateSummary(steamAppId, details) : null;
 
   await db
     .collection("overlay")
