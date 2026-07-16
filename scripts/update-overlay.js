@@ -170,7 +170,7 @@ async function getSteamDetails(appId) {
 // 受賞歴っぽい文（引用符が多い／「受賞」「候補」などのキーワードを含む）は避けて選ぶ。
 function splitSentences(text) {
   return text
-    .split(/(?<=[。！？])/)
+    .split(/(?<=[。！？!?])/)
     .map((s) => s.trim())
     .filter(Boolean);
 }
