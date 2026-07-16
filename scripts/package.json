@@ -1,0 +1,13 @@
+{
+  "name": "twitch-overlay-updater",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Twitchの現在配信カテゴリを取得し、Steamの情報とマッチしてFirestoreに書き込むスクリプト",
+  "scripts": {
+    "update": "node update-overlay.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.6.0"
+  }
+}

@@ -1,0 +1,33 @@
+name: Update Stream Overlay
+
+on:
+  schedule:
+    - cron: "*/5 * * * *" # 5分おき（GitHub側の負荷状況により多少遅延することがあります）
+  workflow_dispatch: {} # Actionsタブから手動実行も可能
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scripts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: scripts/package.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Update overlay data
+        run: node update-overlay.js
+        env:
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          TWITCH_BROADCASTER_LOGIN: ${{ secrets.TWITCH_BROADCASTER_LOGIN }}
+          FIREBASE_SERVICE_ACCOUNT_BASE64: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_BASE64 }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}

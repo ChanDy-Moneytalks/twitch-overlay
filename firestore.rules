@@ -1,0 +1,16 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // オーバーレイ表示用データ：誰でも読み取れるが、クライアントからの書き込みは禁止
+    // （書き込みはGitHub Actions経由のFirebase Admin SDKのみ。Admin SDKはこのルールを無視して動作する）
+    match /overlay/{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Twitchゲーム名 → Steam AppIDのキャッシュ。外部非公開
+    match /steam_mappings/{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
