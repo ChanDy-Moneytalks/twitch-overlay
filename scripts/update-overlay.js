@@ -152,6 +152,46 @@ async function getSteamDetails(appId) {
   };
 }
 
+// ---------- 説明文の短縮 ----------
+// お金をかけずに、句読点の途中で切らず自然な区切りで止める。
+// 1. 「。！？」で終わる位置があればそこまで
+// 2. なければ「、」の位置までで区切る
+// 3. それも無ければ文字数で打ち切って「…」を付ける
+function truncateToSentence(text, maxLen) {
+  const stripped = text.replace(/<[^>]*>/g, "");
+  if (stripped.length <= maxLen) return stripped;
+
+  const slice = stripped.slice(0, maxLen);
+
+  const sentenceEnd = Math.max(
+    slice.lastIndexOf("。"),
+    slice.lastIndexOf("！"),
+    slice.lastIndexOf("？")
+  );
+  if (sentenceEnd > 10) return slice.slice(0, sentenceEnd + 1);
+
+  const commaEnd = slice.lastIndexOf("、");
+  if (commaEnd > 10) return slice.slice(0, commaEnd + 1) + "…";
+
+  return slice + "…";
+}
+
+async function getOrCreateSummary(appId, description) {
+  if (!appId || !description) return description || null;
+  const ref = db.collection("description_summaries").doc(String(appId));
+  const cached = await ref.get();
+  if (cached.exists) return cached.data().summary;
+
+  // カード内(2行・幅約300px)に収まる目安として48文字程度で区切る
+  const summary = truncateToSentence(description, 48);
+  await ref.set({
+    summary,
+    source_description: description,
+    created_at: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  return summary;
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -175,6 +215,9 @@ async function main() {
     ? await findSteamAppId(channel.game_name, channel.game_id)
     : null;
   const details = await getSteamDetails(steamAppId);
+  const descriptionSummary = details
+    ? await getOrCreateSummary(steamAppId, details.description)
+    : null;
 
   await db
     .collection("overlay")
@@ -187,7 +230,7 @@ async function main() {
       title: details?.title || channel.game_name,
       cover_image: details?.cover_image || null,
       genres: details?.genres || [],
-      description: details?.description || null,
+      description: descriptionSummary,
       price: details?.price || null,
       updated_at: admin.firestore.FieldValue.serverTimestamp(),
     });
