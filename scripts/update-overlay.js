@@ -74,14 +74,34 @@ function normalize(name) {
     .replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]/g, "");
 }
 
+const STEAM_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+  Accept: "application/json",
+};
+
+async function fetchJsonSafe(url, label) {
+  const res = await fetch(url, { headers: STEAM_HEADERS });
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(
+      `${label}: JSONとして解析できませんでした (status=${res.status}). 先頭200文字: ${text.slice(0, 200)}`
+    );
+  }
+}
+
 async function findSteamAppId(gameName, gameId) {
   // 既にマッチング済みならキャッシュを使う（Steamの全件リスト取得を毎回避けるため）
   const cacheRef = db.collection("steam_mappings").doc(gameId);
   const cached = await cacheRef.get();
   if (cached.exists) return cached.data().steam_appid;
 
-  const res = await fetch("https://api.steampowered.com/ISteamApps/GetAppList/v2/");
-  const data = await res.json();
+  const data = await fetchJsonSafe(
+    "https://api.steampowered.com/ISteamApps/GetAppList/v2/",
+    "Steamアプリ一覧取得"
+  );
   const apps = data.applist.apps;
   const target = normalize(gameName);
 
@@ -106,10 +126,10 @@ async function findSteamAppId(gameName, gameId) {
 
 async function getSteamDetails(appId) {
   if (!appId) return null;
-  const res = await fetch(
-    `https://store.steampowered.com/api/appdetails?appids=${appId}&cc=jp&l=japanese`
+  const data = await fetchJsonSafe(
+    `https://store.steampowered.com/api/appdetails?appids=${appId}&cc=jp&l=japanese`,
+    "Steam詳細情報取得"
   );
-  const data = await res.json();
   const entry = data[appId];
   if (!entry?.success) return null;
   const d = entry.data;
