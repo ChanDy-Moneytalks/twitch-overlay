@@ -153,26 +153,39 @@ async function getSteamDetails(appId) {
 }
 
 // ---------- 説明文の短縮 ----------
-// お金をかけずに、句読点の途中で切らず自然な区切りで止める。
-// 1. 「。！？」で終わる位置があればそこまで
-// 2. なければ「、」の位置までで区切る
-// 3. それも無ければ文字数で打ち切って「…」を付ける
+// お金をかけずに、意味の通る単位で自然に短くする。
+// Steamの説明文はよく「〇〇媒体でGOTY候補」のような受賞歴の羅列から始まることがあるため、
+// そういう文（「」が3つ以上並ぶ文）は避けて、実際のゲーム説明の文を優先する。
+function splitSentences(text) {
+  return text
+    .split(/(?<=[。！？])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 function truncateToSentence(text, maxLen) {
   const stripped = text.replace(/<[^>]*>/g, "");
-  if (stripped.length <= maxLen) return stripped;
+  const sentences = splitSentences(stripped);
+  if (sentences.length === 0) return stripped.slice(0, maxLen);
 
-  const slice = stripped.slice(0, maxLen);
+  const isAccolade = (s) => (s.match(/「/g) || []).length >= 3;
+  const candidates = sentences.some((s) => !isAccolade(s))
+    ? sentences.filter((s) => !isAccolade(s))
+    : sentences;
 
-  const sentenceEnd = Math.max(
-    slice.lastIndexOf("。"),
-    slice.lastIndexOf("！"),
-    slice.lastIndexOf("？")
-  );
-  if (sentenceEnd > 10) return slice.slice(0, sentenceEnd + 1);
+  // 文字数内に収まる範囲で、文単位でつなげる
+  let result = "";
+  for (const s of candidates) {
+    if ((result + s).length > maxLen) break;
+    result += s;
+  }
+  if (result) return result;
 
+  // どの候補文もmaxLenに収まらない場合は、最初の候補文を読点(、)で自然に区切る
+  const first = candidates[0];
+  const slice = first.slice(0, maxLen);
   const commaEnd = slice.lastIndexOf("、");
   if (commaEnd > 10) return slice.slice(0, commaEnd + 1) + "…";
-
   return slice + "…";
 }
 
@@ -182,8 +195,8 @@ async function getOrCreateSummary(appId, description) {
   const cached = await ref.get();
   if (cached.exists) return cached.data().summary;
 
-  // カード内(2行・幅約300px)に収まる目安として48文字程度で区切る
-  const summary = truncateToSentence(description, 48);
+  // カード内(2行・幅約300px)に収まる目安として52文字程度で区切る
+  const summary = truncateToSentence(description, 52);
   await ref.set({
     summary,
     source_description: description,
