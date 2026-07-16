@@ -93,31 +93,31 @@ async function fetchJsonSafe(url, label) {
 }
 
 async function findSteamAppId(gameName, gameId) {
-  // 既にマッチング済みならキャッシュを使う（Steamの全件リスト取得を毎回避けるため）
+  // 既にマッチング済みならキャッシュを使う
   const cacheRef = db.collection("steam_mappings").doc(gameId);
   const cached = await cacheRef.get();
   if (cached.exists) return cached.data().steam_appid;
 
-  const data = await fetchJsonSafe(
-    "https://api.steampowered.com/ISteamApps/GetAppList/v2/",
-    "Steamアプリ一覧取得"
-  );
-  const apps = data.applist.apps;
-  const target = normalize(gameName);
+  // Steamストア内検索API（ストアの検索窓と同じ仕組み。APIキー不要）
+  const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(
+    gameName
+  )}&l=japanese&cc=jp`;
+  const data = await fetchJsonSafe(url, "Steamストア内検索");
+  const items = data.items || [];
 
-  let match = apps.find((a) => normalize(a.name) === target);
+  const target = normalize(gameName);
+  let match = items.find((it) => normalize(it.name) === target);
   let confidence = "exact";
-  if (!match) {
-    match = apps.find(
-      (a) => normalize(a.name).includes(target) || target.includes(normalize(a.name))
-    );
+  if (!match && items.length > 0) {
+    match = items[0]; // 完全一致がなければ検索結果の最上位を採用
     confidence = "fuzzy";
   }
 
-  const steamAppId = match ? match.appid : null;
+  const steamAppId = match ? match.id : null;
   await cacheRef.set({
     twitch_game_name: gameName,
     steam_appid: steamAppId,
+    matched_name: match?.name || null,
     confidence,
     matched_at: admin.firestore.FieldValue.serverTimestamp(),
   });
