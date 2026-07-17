@@ -51,26 +51,24 @@ function chunk(arr, size) {
   return out;
 }
 
-// 登録済みIDのうち「今まさに配信中」のものだけをまとめて取得する（最大100件/回）
-async function getLiveStreamsByIds(token, broadcasterIds) {
-  const liveMap = new Map(); // broadcaster_id -> { game_id, game_name, title }
+// 登録済みIDの「現在設定されているカテゴリ」を、配信中かどうかに関わらずまとめて取得する（最大100件/回）
+async function getChannelInfoByIds(token, broadcasterIds) {
+  const infoMap = new Map(); // broadcaster_id -> { game_id, game_name }
   for (const group of chunk(broadcasterIds, 100)) {
     const params = new URLSearchParams();
-    group.forEach((id) => params.append("user_id", id));
-    params.append("first", "100");
-    const res = await fetch(`https://api.twitch.tv/helix/streams?${params.toString()}`, {
+    group.forEach((id) => params.append("broadcaster_id", id));
+    const res = await fetch(`https://api.twitch.tv/helix/channels?${params.toString()}`, {
       headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
-    for (const s of data.data || []) {
-      liveMap.set(s.user_id, {
-        game_id: s.game_id,
-        game_name: s.game_name,
-        title: s.title,
+    for (const c of data.data || []) {
+      infoMap.set(c.broadcaster_id, {
+        game_id: c.game_id,
+        game_name: c.game_name,
       });
     }
   }
-  return liveMap;
+  return infoMap;
 }
 
 // ---------- Steam ----------
@@ -248,7 +246,7 @@ async function getOrCreateSummary(appId, details) {
 // ---------- main ----------
 
 async function buildOverlayPayload(channel) {
-  // channel: { game_id, game_name, title }
+  // channel: { game_id, game_name }
   const steamAppId = channel.game_id
     ? await findSteamAppId(channel.game_name, channel.game_id)
     : null;
@@ -260,7 +258,6 @@ async function buildOverlayPayload(channel) {
     twitch_game_id: channel.game_id || null,
     steam_appid: steamAppId,
     found_on_steam: !!details,
-    live: true,
     title: details?.title || channel.game_name,
     cover_image: details?.cover_image || null,
     genres: details?.genres || [],
@@ -280,8 +277,8 @@ async function main() {
   console.log(`登録チャンネル数: ${broadcasterIds.length}`);
 
   const token = await getTwitchToken();
-  const liveMap = await getLiveStreamsByIds(token, broadcasterIds);
-  console.log(`配信中: ${liveMap.size}件`);
+  // 配信中かどうかに関わらず、現在設定されているカテゴリを取得する
+  const channelInfoMap = await getChannelInfoByIds(token, broadcasterIds);
 
   // 現在のoverlayドキュメントをまとめて取得し、差分判定に使う
   const overlayRefs = broadcasterIds.map((id) => db.collection("overlay").doc(id));
@@ -292,16 +289,16 @@ async function main() {
   let skips = 0;
 
   for (const id of broadcasterIds) {
-    const live = liveMap.get(id);
+    const channel = channelInfoMap.get(id);
     const prev = previousById.get(id);
 
-    if (!live || !live.game_name) {
-      // オフライン: 直前がlive:trueだった場合のみ「オフラインになった」ことを書き込む
-      if (prev?.live !== false) {
+    if (!channel || !channel.game_name) {
+      // カテゴリ未設定: 直前がfound_on_steam:trueだった場合のみ「非表示」を書き込む
+      if (prev?.found_on_steam !== false) {
         await db
           .collection("overlay")
           .doc(id)
-          .set({ live: false, found_on_steam: false, updated_at: admin.firestore.FieldValue.serverTimestamp() });
+          .set({ found_on_steam: false, updated_at: admin.firestore.FieldValue.serverTimestamp() });
         writes++;
       } else {
         skips++;
@@ -309,19 +306,19 @@ async function main() {
       continue;
     }
 
-    // 配信中: 直前と同じゲームなら書き込みをスキップ（Firestoreの無料枠を節約）
-    if (prev?.live === true && prev?.twitch_game_id === live.game_id) {
+    // 直前と同じゲームIDなら書き込みをスキップ（Firestoreの無料枠を節約）
+    if (prev?.twitch_game_id === channel.game_id) {
       skips++;
       continue;
     }
 
     try {
-      const payload = await buildOverlayPayload(live);
+      const payload = await buildOverlayPayload(channel);
       await db.collection("overlay").doc(id).set(payload);
       writes++;
-      console.log(`更新: ${id} → ${live.game_name}`);
+      console.log(`更新: ${id} → ${channel.game_name}`);
     } catch (err) {
-      console.error(`失敗: ${id} (${live.game_name}):`, err.message);
+      console.error(`失敗: ${id} (${channel.game_name}):`, err.message);
     }
   }
 
