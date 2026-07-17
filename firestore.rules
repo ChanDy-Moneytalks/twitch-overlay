@@ -1,15 +1,34 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // オーバーレイ表示用データ：誰でも読み取れるが、クライアントからの書き込みは禁止
-    // （書き込みはGitHub Actions経由のFirebase Admin SDKのみ。Admin SDKはこのルールを無視して動作する）
-    match /overlay/{document=**} {
+    // 各配信者のオーバーレイ表示データ。誰でも読めるが、書き込みはGitHub Actions(Admin SDK)経由のみ
+    match /overlay/{broadcasterId} {
       allow read: if true;
       allow write: if false;
     }
 
-    // Twitchゲーム名 → Steam AppIDのキャッシュ。外部非公開
+    // Twitchログインで登録されたチャンネル一覧。
+    // サーバーを持たない構成のため、書き込み内容の「本人確認」はできない(公開情報のみを扱うためリスクは小さい)。
+    // 構造だけ検証し、doc IDはTwitchのuser_idを使う想定。
+    match /channels/{broadcasterId} {
+      allow read: if false;
+      allow write: if request.resource.data.keys().hasAll(['login', 'display_name', 'registered_at'])
+                    && request.resource.data.keys().hasOnly(['login', 'display_name', 'registered_at'])
+                    && request.resource.data.login is string
+                    && request.resource.data.login.size() > 0
+                    && request.resource.data.login.size() < 50
+                    && request.resource.data.display_name is string
+                    && request.resource.data.display_name.size() < 50;
+      allow delete: if false;
+    }
+
+    // Twitchゲーム名 → Steam AppIDのキャッシュ（全ユーザー共有、非公開）
     match /steam_mappings/{document=**} {
+      allow read, write: if false;
+    }
+
+    // ゲーム説明文の短縮結果キャッシュ（全ユーザー共有、非公開）
+    match /description_summaries/{document=**} {
       allow read, write: if false;
     }
   }

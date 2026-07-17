@@ -1,106 +1,78 @@
-# Twitch配信ゲーム情報オーバーレイ
+# Now Playing Tag — 配信ゲーム値札オーバーレイ（誰でも使える版）
 
-配信中にTwitchのカテゴリで選んでいるゲームを自動検知し、カバー画像・タイトル・ジャンル・概要・価格（セール情報込み）をOBSに表示するオーバーレイです。
+Twitchで配信カテゴリに設定しているゲームを自動検知し、カバー画像・タイトル・ジャンル・概要・価格（セール情報込み）を中古ゲームショップの値札風カードでOBSに表示するオーバーレイです。訪問者はTwitchでログインするだけで、自分専用の表示URLが発行されます。
 
-## 仕組み
+## 全体像
 
 ```
-GitHub Actions（5分おき）
-  → Twitch API で現在のカテゴリ(ゲーム)を取得
-  → Steam APIでタイトル・ジャンル・価格・セール情報を取得（初回はゲーム名でマッチングし、結果をFirestoreにキャッシュ）
-  → Firestore (overlay/current) に書き込み
-Firebase Hosting上の index.html
-  → Firestoreをリアルタイム購読して即座に表示更新
-OBS
-  → ブラウザソースとしてHostingのURLを読み込むだけ
+index.html (ランディングページ)
+  → 「Twitchでログイン」→ Twitchの認証画面 → 戻ってくる
+  → ブラウザだけでトークンを検証し、Firestoreの channels/{Twitchユーザーid} に登録
+  → 専用URL（overlay.html?u=Twitchユーザーid）を発行
+
+GitHub Actions（10分おき）
+  → 登録済み全チャンネルの配信中カテゴリをTwitchからまとめて取得（最大100件/回）
+  → 前回と同じ内容ならFirestoreへの書き込みをスキップ（無料枠の節約）
+  → 変化があった時だけ Steam検索 → 詳細取得 → overlay/{Twitchユーザーid} に書き込み
+
+overlay.html?u=... (OBSに設定するURL)
+  → 該当ドキュメントをリアルタイム購読して表示
 ```
 
-Steamで見つからないカテゴリ（Just Chatting、IRLなど）のときはカードを自動的に非表示にします。
+Twitchログインは秘密鍵不要の「Implicit Grant」方式を使っているため、専用のバックエンドサーバーは不要です（今まで通りFirebase Hosting + Firestore + GitHub Actionsだけで完結します）。
+
+## セキュリティ上の注意
+
+この構成にはバックエンドサーバーが無いため、Twitchログインの「本人確認」を厳密にはできません（Firestoreのセキュリティルールでデータの形だけを検証しています）。扱っているのは「誰でも見られる配信カテゴリ情報」のみで、個人情報やアカウント操作は一切行わないため実害は小さいですが、念のため把握しておいてください。
 
 ## セットアップ手順
 
-### 1. Firebaseプロジェクトを作成
+### 1. Twitchアプリの設定を追加
 
-1. https://console.firebase.google.com/ で新規プロジェクトを作成
-2. 「Firestore Database」を本番モードで有効化（リージョンは asia-northeast1 推奨）
-3. 「Hosting」を有効化
-4. 「プロジェクトの設定 → 全般 → マイアプリ」でウェブアプリを追加し、表示される `firebaseConfig` の値を控える
+既存のTwitchアプリ（分析ダッシュボードと共用）の管理画面（https://dev.twitch.tv/console/apps ）を開き、「OAuth Redirect URLs」に以下を追加してください。
 
-### 2. index.html にFirebase設定を反映
+```
+https://<あなたのFirebaseプロジェクトID>.web.app/index.html
+```
 
-`public/index.html` 内の以下の部分を、手順1で控えた値に書き換えてください。
+（例: `https://gameintroduce-9d196.web.app/index.html`）
+
+これが無いとTwitchログインが失敗します。
+
+### 2. index.html にClient IDを設定
+
+`public/index.html` 内の以下を、TwitchアプリのClient IDに置き換えてください（Client IDは公開情報なので埋め込んで問題ありません。Client Secretは絶対に書かないでください）。
 
 ```js
-const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID",
-};
+const TWITCH_CLIENT_ID = "YOUR_TWITCH_CLIENT_ID";
 ```
 
-この値は公開情報（クライアント用の識別子）なので、GitHubに公開してもセキュリティ上問題ありません。実際のアクセス制御はFirestoreのルール（`firestore.rules`）側で行っています。
+### 3. Firestoreルール・Hostingをデプロイ
 
-### 3. サービスアカウントキーを生成
-
-1. 「プロジェクトの設定 → サービスアカウント」タブ
-2. 「新しい秘密鍵の生成」でJSONファイルをダウンロード
-3. ターミナルで以下を実行してbase64文字列に変換（PowerShellの場合）
-
-```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("ダウンロードしたファイル.json")) | Set-Clipboard
+```bash
+firebase deploy --only hosting,firestore:rules
 ```
 
-クリップボードにコピーされるので、そのままGitHub Secretsに貼り付けます。
+### 4. GitHub Secrets
 
-### 4. Twitchアプリの認証情報
-
-分析ダッシュボードプロジェクトで作成済みのTwitchアプリがあれば、そのClient ID / Client Secretをそのまま流用できます（このオーバーレイはユーザー認証not不要で、`client_credentials`グラントのみ使用するため、追加のスコープ設定は不要です）。
-新規に作る場合は https://dev.twitch.tv/console/apps から作成してください。
-
-### 5. GitHubリポジトリにSecretsを登録
-
-リポジトリの `Settings → Secrets and variables → Actions` で以下を登録:
+これまでの設定から `TWITCH_BROADCASTER_LOGIN` は不要になりました（削除してOKです）。残り4つが登録されていればそのまま動きます。
 
 | Secret名 | 内容 |
 |---|---|
 | `TWITCH_CLIENT_ID` | TwitchアプリのClient ID |
 | `TWITCH_CLIENT_SECRET` | TwitchアプリのClient Secret |
-| `TWITCH_BROADCASTER_LOGIN` | 自分のTwitchユーザー名（ログインID、表示名ではなくURLに使われる方） |
-| `FIREBASE_SERVICE_ACCOUNT_BASE64` | 手順3で作ったbase64文字列 |
+| `FIREBASE_SERVICE_ACCOUNT_BASE64` | サービスアカウントキーのbase64文字列 |
 | `FIREBASE_PROJECT_ID` | FirebaseプロジェクトID |
 
-### 6. デプロイ
+### 5. 動作確認
 
-```bash
-npm install -g firebase-tools
-firebase login
-firebase use --add   # 作成したプロジェクトを選択
-firebase deploy --only hosting,firestore:rules
-```
+1. `https://<プロジェクトID>.web.app/` を開き、「Twitchでログインしてはじめる」を押す
+2. Twitchのログイン画面が出るのでログイン
+3. 戻ってくると専用URLが表示される
+4. そのURLをOBSのブラウザソースに設定
+5. GitHub Actionsの「Run workflow」を手動実行して、Firestoreの `overlay/{Twitchユーザーid}` にデータが入るか確認
 
-デプロイ後、`https://<プロジェクトID>.web.app` がオーバーレイのURLになります。
+## 今後、利用者が増えてきたら
 
-### 7. 動作確認
-
-1. GitHubリポジトリの「Actions」タブ → `Update Stream Overlay` → 「Run workflow」で手動実行
-2. Firestoreコンソールで `overlay/current` ドキュメントが作成されているか確認
-3. `https://<プロジェクトID>.web.app` をブラウザで開き、カードが表示されるか確認
-   （Twitch側で配信カテゴリを何かのゲームに設定していないと非表示のままなので、事前にカテゴリ設定をしておいてください）
-
-### 8. OBSに追加
-
-1. ソース → 「ブラウザ」を追加
-2. URL: `https://<プロジェクトID>.web.app`
-3. 幅・高さ: 配信解像度に合わせる（例: 1920×1080）
-4. 「シーン内にオーディオを制御」はOFFでOK
-5. 背景は透過なので、そのまま他のソースの上に重ねて配置できます
-
-カードは画面左下に固定表示されます。位置を変えたい場合は `public/index.html` の `#card` の `left` / `bottom` の値を調整してください。
-
-## 補足
-
-- 5分間隔はGitHub Actionsの仕様上、実際には数分〜十数分程度ずれることがあります。もっとリアルタイム性が必要な場合は間隔を狭めるより、配信開始時に手動でworkflow_dispatchを叩く運用も検討してください。
-- Steamでのゲーム名マッチングは自動（完全一致→部分一致）です。マッチが誤っている場合はFirestoreの `steam_mappings/{game_id}` ドキュメントを手動で修正すれば、次回以降そのゲームは正しいAppIDが使われます。
+- Firestoreの無料枠（読み取り5万件/日、書き込み2万件/日）に近づいてきたら、`.github/workflows/update-overlay.yml` の実行間隔（現在10分おき）をさらに緩めることで対応できます。
+- 本格的にアクセスが増える場合は、Twitchのポーリングをやめて EventSub（Webhook形式のプッシュ通知）に切り替えるのが本筋の解決策ですが、その場合は常時起動するサーバー（Cloud Run等）が必要になり、現在の「サーバーレス・無料構成」からは外れます。

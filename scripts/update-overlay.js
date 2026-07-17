@@ -3,7 +3,6 @@ import admin from "firebase-admin";
 const {
   TWITCH_CLIENT_ID,
   TWITCH_CLIENT_SECRET,
-  TWITCH_BROADCASTER_LOGIN,
   FIREBASE_SERVICE_ACCOUNT_BASE64,
   FIREBASE_PROJECT_ID,
 } = process.env;
@@ -14,7 +13,6 @@ function requireEnv(name, value) {
 }
 requireEnv("TWITCH_CLIENT_ID", TWITCH_CLIENT_ID);
 requireEnv("TWITCH_CLIENT_SECRET", TWITCH_CLIENT_SECRET);
-requireEnv("TWITCH_BROADCASTER_LOGIN", TWITCH_BROADCASTER_LOGIN);
 requireEnv("FIREBASE_SERVICE_ACCOUNT_BASE64", FIREBASE_SERVICE_ACCOUNT_BASE64);
 requireEnv("FIREBASE_PROJECT_ID", FIREBASE_PROJECT_ID);
 
@@ -47,22 +45,32 @@ async function getTwitchToken() {
   return data.access_token;
 }
 
-async function getBroadcasterId(token) {
-  const res = await fetch(
-    `https://api.twitch.tv/helix/users?login=${encodeURIComponent(TWITCH_BROADCASTER_LOGIN)}`,
-    { headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: `Bearer ${token}` } }
-  );
-  const data = await res.json();
-  return data.data?.[0]?.id || null;
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
-async function getCurrentChannelInfo(token, broadcasterId) {
-  const res = await fetch(
-    `https://api.twitch.tv/helix/channels?broadcaster_id=${broadcasterId}`,
-    { headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: `Bearer ${token}` } }
-  );
-  const data = await res.json();
-  return data.data?.[0] || null; // { game_id, game_name, title, ... }
+// 登録済みIDのうち「今まさに配信中」のものだけをまとめて取得する（最大100件/回）
+async function getLiveStreamsByIds(token, broadcasterIds) {
+  const liveMap = new Map(); // broadcaster_id -> { game_id, game_name, title }
+  for (const group of chunk(broadcasterIds, 100)) {
+    const params = new URLSearchParams();
+    group.forEach((id) => params.append("user_id", id));
+    params.append("first", "100");
+    const res = await fetch(`https://api.twitch.tv/helix/streams?${params.toString()}`, {
+      headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    for (const s of data.data || []) {
+      liveMap.set(s.user_id, {
+        game_id: s.game_id,
+        game_name: s.game_name,
+        title: s.title,
+      });
+    }
+  }
+  return liveMap;
 }
 
 // ---------- Steam ----------
@@ -239,48 +247,85 @@ async function getOrCreateSummary(appId, details) {
 
 // ---------- main ----------
 
-async function main() {
-  const token = await getTwitchToken();
-  const broadcasterId = await getBroadcasterId(token);
-  if (!broadcasterId) {
-    throw new Error(
-      "配信者IDが取得できませんでした。TWITCH_BROADCASTER_LOGIN（ユーザー名）を確認してください"
-    );
-  }
-
-  const channel = await getCurrentChannelInfo(token, broadcasterId);
-  if (!channel || !channel.game_name) {
-    console.log("現在のカテゴリ情報が取得できませんでした（配信未設定の可能性）");
-    return;
-  }
-
-  console.log(`Twitchカテゴリ: ${channel.game_name} (game_id=${channel.game_id})`);
-
+async function buildOverlayPayload(channel) {
+  // channel: { game_id, game_name, title }
   const steamAppId = channel.game_id
     ? await findSteamAppId(channel.game_name, channel.game_id)
     : null;
   const details = await getSteamDetails(steamAppId);
   const descriptionSummary = details ? await getOrCreateSummary(steamAppId, details) : null;
 
-  await db
-    .collection("overlay")
-    .doc("current")
-    .set({
-      twitch_game_name: channel.game_name,
-      twitch_game_id: channel.game_id || null,
-      steam_appid: steamAppId,
-      found_on_steam: !!details,
-      title: details?.title || channel.game_name,
-      cover_image: details?.cover_image || null,
-      genres: details?.genres || [],
-      description: descriptionSummary,
-      price: details?.price || null,
-      updated_at: admin.firestore.FieldValue.serverTimestamp(),
-    });
+  return {
+    twitch_game_name: channel.game_name,
+    twitch_game_id: channel.game_id || null,
+    steam_appid: steamAppId,
+    found_on_steam: !!details,
+    live: true,
+    title: details?.title || channel.game_name,
+    cover_image: details?.cover_image || null,
+    genres: details?.genres || [],
+    description: descriptionSummary,
+    price: details?.price || null,
+    updated_at: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
 
-  console.log(
-    `更新完了: ${channel.game_name} → Steam AppID: ${steamAppId || "なし（マッチせず）"}`
-  );
+async function main() {
+  const channelsSnap = await db.collection("channels").get();
+  if (channelsSnap.empty) {
+    console.log("登録済みチャンネルがありません");
+    return;
+  }
+  const broadcasterIds = channelsSnap.docs.map((d) => d.id);
+  console.log(`登録チャンネル数: ${broadcasterIds.length}`);
+
+  const token = await getTwitchToken();
+  const liveMap = await getLiveStreamsByIds(token, broadcasterIds);
+  console.log(`配信中: ${liveMap.size}件`);
+
+  // 現在のoverlayドキュメントをまとめて取得し、差分判定に使う
+  const overlayRefs = broadcasterIds.map((id) => db.collection("overlay").doc(id));
+  const overlaySnaps = await db.getAll(...overlayRefs);
+  const previousById = new Map(overlaySnaps.map((s) => [s.id, s.exists ? s.data() : null]));
+
+  let writes = 0;
+  let skips = 0;
+
+  for (const id of broadcasterIds) {
+    const live = liveMap.get(id);
+    const prev = previousById.get(id);
+
+    if (!live || !live.game_name) {
+      // オフライン: 直前がlive:trueだった場合のみ「オフラインになった」ことを書き込む
+      if (prev?.live !== false) {
+        await db
+          .collection("overlay")
+          .doc(id)
+          .set({ live: false, found_on_steam: false, updated_at: admin.firestore.FieldValue.serverTimestamp() });
+        writes++;
+      } else {
+        skips++;
+      }
+      continue;
+    }
+
+    // 配信中: 直前と同じゲームなら書き込みをスキップ（Firestoreの無料枠を節約）
+    if (prev?.live === true && prev?.twitch_game_id === live.game_id) {
+      skips++;
+      continue;
+    }
+
+    try {
+      const payload = await buildOverlayPayload(live);
+      await db.collection("overlay").doc(id).set(payload);
+      writes++;
+      console.log(`更新: ${id} → ${live.game_name}`);
+    } catch (err) {
+      console.error(`失敗: ${id} (${live.game_name}):`, err.message);
+    }
+  }
+
+  console.log(`完了: 書き込み${writes}件 / スキップ${skips}件`);
 }
 
 main().catch((err) => {

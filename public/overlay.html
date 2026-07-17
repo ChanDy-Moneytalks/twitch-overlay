@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>Now Playing Tag Overlay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hachi+Maru+Pop&family=Zen+Kaku+Gothic+New:wght@500;700;900&family=DotGothic16&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #E8B23D;
+    --paper-edge: #B9852A;
+    --paper-dark: #C99A34;
+    --ink: #201C14;
+    --ink-soft: #4a4331;
+    --stamp: #1E5C4F;
+    --sale: #C6362A;
+    --sale-dark: #8F2620;
+    --card-w: 460px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent; /* OBSブラウザソースは背景透過で読み込む */
+    font-family: "Zen Kaku Gothic New", sans-serif;
+    overflow: hidden;
+  }
+
+  #card {
+    position: fixed;
+    left: 32px;
+    bottom: 32px;
+    width: var(--card-w);
+    display: flex;
+    align-items: stretch;
+    filter: drop-shadow(0 10px 18px rgba(0,0,0,.45));
+    opacity: 0;
+    transform: translateY(16px) scale(.97);
+    transition: opacity .45s ease, transform .45s ease;
+  }
+  #card.visible { opacity: 1; transform: translateY(0) scale(1); }
+  #card.stamp-in { animation: stampIn .38s cubic-bezier(.2,1.4,.4,1); }
+  @keyframes stampIn {
+    0%   { transform: scale(1.14) rotate(-2deg); opacity: .5; }
+    60%  { transform: scale(.98) rotate(.5deg); }
+    100% { transform: scale(1) rotate(0); opacity: 1; }
+  }
+
+  /* --- カバー画像（値札に立てかけたパッケージ風） --- */
+  .cover-wrap {
+    position: relative;
+    width: 132px;
+    flex: none;
+    margin: 10px 0 10px 4px;
+    transform: rotate(-3deg);
+    z-index: 2;
+  }
+  .cover-wrap img {
+    width: 100%;
+    height: 124px;
+    object-fit: cover;
+    display: block;
+    border: 3px solid var(--ink);
+    background: #333;
+    box-shadow: 3px 4px 0 rgba(0,0,0,.35);
+  }
+  .sale-ribbon {
+    position: absolute;
+    top: -10px;
+    right: -22px;
+    background: var(--sale);
+    color: #fff;
+    font-family: "Hachi Maru Pop", sans-serif;
+    font-size: 14px;
+    padding: 3px 14px;
+    transform: rotate(14deg);
+    box-shadow: 0 2px 0 var(--sale-dark);
+    border: 2px solid var(--ink);
+    letter-spacing: .05em;
+  }
+  .sale-ribbon.hidden { display: none; }
+
+  /* --- 値札本体 --- */
+  .tag-body {
+    position: relative;
+    flex: 1;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-left: none;
+    padding: 12px 16px 12px 22px;
+    min-width: 0;
+  }
+  /* 左端のギザギザ（チケットの千切り跡） */
+  .tag-body::before {
+    content: "";
+    position: absolute;
+    left: -13px;
+    top: -3px;
+    bottom: -3px;
+    width: 13px;
+    background-image:
+      linear-gradient(135deg, var(--paper) 50%, transparent 50%),
+      linear-gradient(-135deg, var(--paper) 50%, transparent 50%);
+    background-size: 13px 13px;
+    background-position: left top;
+    background-repeat: repeat-y;
+  }
+
+  .eyebrow {
+    display: inline-block;
+    font-family: "DotGothic16", monospace;
+    font-size: 11px;
+    letter-spacing: .12em;
+    color: #fff;
+    background: var(--ink);
+    padding: 2px 8px;
+    transform: rotate(-2deg);
+    margin-bottom: 6px;
+  }
+
+  #title {
+    font-family: "Hachi Maru Pop", sans-serif;
+    font-size: 21px;
+    line-height: 1.25;
+    color: var(--ink);
+    margin: 0 0 6px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .genre-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 7px;
+  }
+  .genre-pill {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--stamp);
+    border: 1.5px solid var(--stamp);
+    border-radius: 999px;
+    padding: 1px 8px;
+    background: rgba(255,255,255,.28);
+    mix-blend-mode: multiply;
+  }
+  .genre-pill:nth-child(odd) { transform: rotate(-2deg); }
+  .genre-pill:nth-child(even) { transform: rotate(2deg); }
+
+  #description {
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--ink-soft);
+    margin: 0 0 8px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .price-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    border-top: 2px dashed var(--paper-edge);
+    padding-top: 7px;
+  }
+  .price-original {
+    font-size: 12px;
+    color: var(--ink-soft);
+    text-decoration: line-through;
+  }
+  .price-final {
+    font-family: "Hachi Maru Pop", sans-serif;
+    font-size: 19px;
+    color: var(--sale);
+  }
+  .price-final.no-discount { color: var(--ink); }
+  .discount-badge {
+    margin-left: auto;
+    font-family: "Hachi Maru Pop", sans-serif;
+    font-size: 13px;
+    color: #fff;
+    background: var(--sale);
+    border: 2px solid var(--ink);
+    border-radius: 50%;
+    width: 42px;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transform: rotate(-10deg);
+    flex: none;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+  <div id="card">
+    <div class="cover-wrap">
+      <img id="cover" src="" alt="" />
+      <div id="saleRibbon" class="sale-ribbon hidden">SALE</div>
+    </div>
+    <div class="tag-body">
+      <span class="eyebrow">NOW PLAYING</span>
+      <h1 id="title"></h1>
+      <div id="genres" class="genre-row"></div>
+      <p id="description"></p>
+      <div id="priceRow" class="price-row">
+        <span id="priceOriginal" class="price-original hidden"></span>
+        <span id="priceFinal" class="price-final"></span>
+        <span id="discountBadge" class="discount-badge hidden"></span>
+      </div>
+    </div>
+  </div>
+
+<script type="module">
+  // ↓ Firebaseコンソール「プロジェクトの設定 > マイアプリ」に表示される値に置き換えてください
+  const firebaseConfig = {
+    apiKey: "AIzaSyAC_xStTOnu5QquB-dHnjFEw1sMTNVpewA",
+    authDomain: "gameintroduce-9d196.firebaseapp.com",
+    projectId: "gameintroduce-9d196",
+    storageBucket: "gameintroduce-9d196.firebasestorage.app",
+    messagingSenderId: "828009386657",
+    appId: "1:828009386657:web:7b22b9f94e343ff8b1d6e0",
+    measurementId: "G-SMWZPMJK1T",
+  };
+
+  const el = {
+    card: document.getElementById("card"),
+    cover: document.getElementById("cover"),
+    saleRibbon: document.getElementById("saleRibbon"),
+    title: document.getElementById("title"),
+    genres: document.getElementById("genres"),
+    description: document.getElementById("description"),
+    priceOriginal: document.getElementById("priceOriginal"),
+    priceFinal: document.getElementById("priceFinal"),
+    discountBadge: document.getElementById("discountBadge"),
+  };
+
+  let lastTitle = null;
+
+  function renderData(data) {
+    if (!data || !data.found_on_steam) {
+      el.card.classList.remove("visible");
+      lastTitle = null;
+      return;
+    }
+
+    el.cover.src = data.cover_image || "";
+    el.title.textContent = data.title || data.twitch_game_name || "";
+    el.description.textContent = data.description || "";
+
+    el.genres.innerHTML = "";
+    (data.genres || []).slice(0, 3).forEach((g) => {
+      const span = document.createElement("span");
+      span.className = "genre-pill";
+      span.textContent = g;
+      el.genres.appendChild(span);
+    });
+
+    const price = data.price;
+    if (!price) {
+      el.priceOriginal.classList.add("hidden");
+      el.priceFinal.textContent = "価格情報なし";
+      el.priceFinal.classList.add("no-discount");
+      el.discountBadge.classList.add("hidden");
+      el.saleRibbon.classList.add("hidden");
+    } else if (price.is_free) {
+      el.priceOriginal.classList.add("hidden");
+      el.priceFinal.textContent = "無料プレイ";
+      el.priceFinal.classList.add("no-discount");
+      el.discountBadge.classList.add("hidden");
+      el.saleRibbon.classList.add("hidden");
+    } else if (price.discount_percent > 0) {
+      el.priceOriginal.textContent = price.initial_formatted;
+      el.priceOriginal.classList.remove("hidden");
+      el.priceFinal.textContent = price.final_formatted;
+      el.priceFinal.classList.remove("no-discount");
+      el.discountBadge.textContent = `-${price.discount_percent}%`;
+      el.discountBadge.classList.remove("hidden");
+      el.saleRibbon.classList.remove("hidden");
+    } else {
+      el.priceOriginal.classList.add("hidden");
+      el.priceFinal.textContent = price.final_formatted;
+      el.priceFinal.classList.add("no-discount");
+      el.discountBadge.classList.add("hidden");
+      el.saleRibbon.classList.add("hidden");
+    }
+
+    el.card.classList.add("visible");
+
+    const currentTitle = data.title || data.twitch_game_name;
+    if (currentTitle !== lastTitle) {
+      el.card.classList.remove("stamp-in");
+      void el.card.offsetWidth; // reflow強制で再アニメーション
+      el.card.classList.add("stamp-in");
+      lastTitle = currentTitle;
+    }
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const broadcasterId = params.get("u");
+  const isConfigured = firebaseConfig.apiKey !== "YOUR_API_KEY";
+
+  if (!isConfigured || !broadcasterId) {
+    // Firebase未設定、または ?u=... が無いとき（プレビュー用）はサンプルデータを表示する。
+    // 外部への通信は一切行わないので、ネットワークが遮断された環境でも表示される。
+    console.info(
+      !broadcasterId
+        ? "[overlay] URLに ?u=あなたのID が付いていないため、サンプルデータでプレビュー表示しています。connect.htmlで発行されたURLを使ってください。"
+        : "[overlay] firebaseConfigが未設定のため、サンプルデータでプレビュー表示しています。"
+    );
+    const demoCover =
+      "data:image/svg+xml;utf8," +
+      encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="460" height="215">
+           <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+             <stop offset="0" stop-color="#4b3f72"/><stop offset="1" stop-color="#1d1b2e"/>
+           </linearGradient></defs>
+           <rect width="460" height="215" fill="url(#g)"/>
+           <text x="230" y="115" font-family="sans-serif" font-size="26" fill="#E8B23D" text-anchor="middle" font-weight="bold">SAMPLE COVER</text>
+         </svg>`
+      );
+    renderData({
+      found_on_steam: true,
+      twitch_game_name: "サンプルゲーム",
+      title: "サンプルゲーム: Definitive Edition",
+      cover_image: demoCover,
+      genres: ["アクション", "RPG", "インディー"],
+      description:
+        "これはプレビュー用サンプルです。connect.htmlで発行されたURLをOBSに設定すると、実際の配信中ゲーム情報が表示されます。",
+      price: {
+        is_free: false,
+        initial_formatted: "¥2,980",
+        final_formatted: "¥1,490",
+        discount_percent: 50,
+      },
+    });
+  } else {
+    const { initializeApp } = await import(
+      "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js"
+    );
+    const { getFirestore, doc, onSnapshot } = await import(
+      "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"
+    );
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    onSnapshot(doc(db, "overlay", broadcasterId), (snap) => {
+      renderData(snap.exists() ? snap.data() : null);
+    });
+  }
+</script>
+</body>
+</html>
