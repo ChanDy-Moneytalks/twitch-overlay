@@ -197,7 +197,7 @@
 
 <script type="module">
   // ↓ TwitchデベロッパーコンソールのClient ID（公開情報のため埋め込んで問題ありません）
-const TWITCH_CLIENT_ID = "yxpxmxpi4vrxpwiatmws4qdpab0js5";
+  const TWITCH_CLIENT_ID = "YOUR_TWITCH_CLIENT_ID";
 
   const REDIRECT_URI = window.location.origin + window.location.pathname;
   const OVERLAY_PATH = "/overlay.html";
@@ -215,7 +215,7 @@ const TWITCH_CLIENT_ID = "yxpxmxpi4vrxpwiatmws4qdpab0js5";
 
   el.loginBtn.addEventListener("click", () => {
     const url = new URL("https://id.twitch.tv/oauth2/authorize");
-    url.searchParams.set("client_id", "yxpxmxpi4vrxpwiatmws4qdpab0js5");
+    url.searchParams.set("client_id", TWITCH_CLIENT_ID);
     url.searchParams.set("redirect_uri", REDIRECT_URI);
     url.searchParams.set("response_type", "token");
     url.searchParams.set("scope", "");
@@ -235,7 +235,7 @@ const TWITCH_CLIENT_ID = "yxpxmxpi4vrxpwiatmws4qdpab0js5";
     const validateData = await validateRes.json();
 
     const usersRes = await fetch("https://api.twitch.tv/helix/users", {
-      headers: { "Client-Id": yxpxmxpi4vrxpwiatmws4qdpab0js5, Authorization: `Bearer ${token}` },
+      headers: { "Client-Id": TWITCH_CLIENT_ID, Authorization: `Bearer ${token}` },
     });
     const usersData = await usersRes.json();
     const user = usersData.data?.[0];
